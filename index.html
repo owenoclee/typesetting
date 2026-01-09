@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Typesetting Engine</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+            min-height: 100vh;
+        }
+        .container {
+            display: flex;
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .input-panel {
+            flex: 1;
+            min-width: 300px;
+        }
+        .output-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            margin: 0 0 20px 0;
+            font-size: 24px;
+            color: #333;
+        }
+        textarea {
+            width: 100%;
+            height: calc(100vh - 120px);
+            padding: 16px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            resize: none;
+            line-height: 1.5;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+        }
+        .canvas-container {
+            background: #fff;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            border-radius: 4px;
+        }
+        canvas {
+            display: block;
+        }
+        .stats {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="input-panel">
+            <h1>Markdown Input</h1>
+            <textarea id="input" spellcheck="false"># A Treatise on Typography
+
+The art of typography is one of the most fundamental aspects of written communication. Through careful arrangement of type, the typographer seeks to create a harmonious balance between readability and aesthetic beauty.
+
+# The Golden Ratio
+
+Many typographers have long relied on mathematical principles to guide their work. The golden ratio, approximately 1.618, appears throughout nature and has been employed in typography to determine ideal proportions between line length, leading, and margins.
+
+# Line Breaking Algorithms
+
+Modern typesetting systems employ sophisticated algorithms to determine optimal line breaks. The Knuth-Plass algorithm, developed for TeX, uses dynamic programming to minimize the overall "badness" of a paragraph by considering multiple possible break points simultaneously.
+
+This approach produces significantly better results than simple greedy algorithms, which make locally optimal choices without considering the global context of the paragraph.</textarea>
+        </div>
+        <div class="output-panel">
+            <h1>Typeset Output</h1>
+            <div class="canvas-container">
+                <canvas id="canvas"></canvas>
+            </div>
+            <div class="stats" id="stats"></div>
+        </div>
+    </div>
+
+    <script>
+    // ============================================================
+    // TYPESETTING ENGINE - JavaScript/Canvas Implementation
+    // Port of the Go typesetting engine with Knuth-Plass algorithm
+    // ============================================================
+
+    // --- Configuration (LaTeX article class inspired) ---
+    const CONFIG = {
+        // Page dimensions (A4 in pixels at 96 DPI, scaled for screen)
+        pageWidth: 595,
+        pageHeight: 842,
+        marginTop: 89,
+        marginBottom: 89,
+        marginLeft: 125,
+        marginRight: 125,
+
+        // Typography
+        baseFontSize: 10,
+        lineHeightMultiplier: 1.2,
+        fontFamily: 'Times New Roman, Times, serif',
+
+        // Algorithm parameters
+        tolerance: 3.0,
+        hyphenPenalty: 30,
+
+        // Glue parameters
+        glueStretchRatio: 1.0,
+        glueShrinkRatio: 0.5,
+    };
+
+    CONFIG.textWidth = CONFIG.pageWidth - CONFIG.marginLeft - CONFIG.marginRight;
+
+    // --- Heading Styles ---
+    function getHeadingStyle(level) {
+        const base = CONFIG.baseFontSize;
+        switch (level) {
+            case 1:
+                return { fontSize: base * 1.7, spaceBefore: base * 2.4, spaceAfter: base * 1.0 };
+            case 2:
+                return { fontSize: base * 1.4, spaceBefore: base * 1.8, spaceAfter: base * 0.8 };
+            default:
+                return { fontSize: base * 1.2, spaceBefore: base * 1.2, spaceAfter: base * 0.6 };
+        }
+    }
+
+    // --- Markdown Parser ---
+    function parseMarkdown(text) {
+        const blocks = [];
+        const lines = text.split('\n');
+        let i = 0;
+
+        while (i < lines.length) {
+            const line = lines[i].trim();
+
+            // Skip empty lines
+            if (line === '') {
+                i++;
+                continue;
+            }
+
+            // Check for heading
+            if (line.startsWith('#')) {
+                const heading = parseHeading(line);
+                if (heading) {
+                    blocks.push(heading);
+                    i++;
+                    continue;
+                }
+            }
+
+            // Collect paragraph lines
+            const paraLines = [];
+            while (i < lines.length) {
+                const pLine = lines[i].trim();
+                if (pLine === '' || pLine.startsWith('#')) break;
+                paraLines.push(pLine);
+                i++;
+            }
+
+            if (paraLines.length > 0) {
+                blocks.push({
+                    type: 'paragraph',
+                    text: paraLines.join(' '),
+                    level: 0
+                });
+            }
+        }
+
+        return blocks;
+    }
+
+    function parseHeading(line) {
+        let level = 0;
+        for (const ch of line) {
+            if (ch === '#') level++;
+            else break;
+        }
+        if (level === 0 || level > 6) return null;
+        return {
+            type: 'heading',
+            text: line.slice(level).trim(),
+            level: level
+        };
+    }
+
+    // --- Hyphenation ---
+    const CONSONANT_CLUSTERS = new Set([
+        'bl', 'br', 'ch', 'ck', 'cl', 'cr', 'dr', 'fl', 'fr', 'gh',
+        'gl', 'gr', 'ph', 'pl', 'pr', 'sc', 'sh', 'sk', 'sl', 'sm',
+        'sn', 'sp', 'st', 'sw', 'th', 'tr', 'tw', 'wh', 'wr'
+    ]);
+
+    const COMMON_PREFIXES = new Set([
+        'un', 're', 'in', 'dis', 'en', 'non', 'pre', 'mis', 'over', 'sub',
+        'anti', 'auto', 'semi', 'super', 'trans', 'inter', 'under', 'out',
+        'con', 'com', 'pro', 'per', 'ex', 'de', 'be', 'fore', 'counter'
+    ]);
+
+    const COMMON_SUFFIXES = new Set([
+        'ing', 'tion', 'sion', 'ment', 'ness', 'able', 'ible', 'ful', 'less',
+        'ous', 'ive', 'ly', 'er', 'est', 'al', 'ity', 'ty', 'ry', 'phy', 'gy',
+        'ers', 'ies', 'ed', 'es', 'en', 'ian', 'ical', 'ally', 'ence', 'ance',
+        'eous', 'ious', 'tial', 'cial', 'tive', 'sive', 'phers', 'ther',
+        'graph', 'raphy', 'logy', 'sophy'
+    ]);
+
+    function isVowel(ch) {
+        return 'aeiouyAEIOUY'.includes(ch);
+    }
+
+    function isConsonant(ch) {
+        return /[a-zA-Z]/.test(ch) && !isVowel(ch);
+    }
+
+    function isConsonantCluster(c1, c2) {
+        const pair = (c1 + c2).toLowerCase();
+        return CONSONANT_CLUSTERS.has(pair);
+    }
+
+    function canBreakAt(word, i) {
+        if (i < 1 || i >= word.length) return false;
+
+        const prev = word[i - 1];
+        const curr = word[i];
+        const n = word.length;
+
+        // Rule 1: Break between two different consonants (not clusters)
+        if (isConsonant(prev) && isConsonant(curr) && prev !== curr) {
+            if (!isConsonantCluster(prev, curr)) return true;
+        }
+
+        // Rule 2: Break after vowel+consonant if next is consonant
+        if (i >= 2 && isVowel(word[i - 2]) && isConsonant(prev) && isConsonant(curr)) {
+            return true;
+        }
+
+        // Rule 3: VCV pattern - break before consonant
+        if (isVowel(prev) && isConsonant(curr) && i + 1 < n && isVowel(word[i + 1])) {
+            return true;
+        }
+
+        // Rule 4: Common prefixes
+        const prefix = word.slice(0, i).toLowerCase();
+        if (COMMON_PREFIXES.has(prefix)) return true;
+
+        // Rule 5: Common suffixes
+        const suffix = word.slice(i).toLowerCase();
+        if (COMMON_SUFFIXES.has(suffix)) return true;
+
+        // Rule 6: Long words - break after vowel-consonant
+        if (n > 8 && isVowel(prev) && isConsonant(curr)) return true;
+
+        // Rule 7: Break between different vowels (hiatus)
+        if (isVowel(prev) && isVowel(curr) && prev !== curr) return true;
+
+        return false;
+    }
+
+    function hyphenate(word) {
+        const minWordLen = 5;
+        const minPrefix = 2;
+        const minSuffix = 3;
+
+        if (word.length < minWordLen) return [];
+
+        const points = [];
+        for (let i = minPrefix; i <= word.length - minSuffix; i++) {
+            if (canBreakAt(word, i)) {
+                points.push(i);
+            }
+        }
+        return points;
+    }
+
+    // --- Text Measurement ---
+    let measureCtx = null;
+
+    function getMeasureContext() {
+        if (!measureCtx) {
+            const canvas = document.createElement('canvas');
+            measureCtx = canvas.getContext('2d');
+        }
+        return measureCtx;
+    }
+
+    function measureText(text, fontSize) {
+        const ctx = getMeasureContext();
+        ctx.font = `${fontSize}px ${CONFIG.fontFamily}`;
+        return ctx.measureText(text).width;
+    }
+
+    function measureChar(char, fontSize) {
+        return measureText(char, fontSize);
+    }
+
+    // --- Breaking Items ---
+    const NEGATIVE_INFINITE_PENALTY = -10000;
+
+    class Box {
+        constructor(width, char) {
+            this.width = width;
+            this.char = char;
+        }
+        isBox() { return true; }
+        isGlue() { return false; }
+        isPenalty() { return false; }
+        getWidth() { return this.width; }
+        getStretch() { return 0; }
+        getShrink() { return 0; }
+    }
+
+    class Glue {
+        constructor(width, stretch, shrink) {
+            this.width = width;
+            this.stretch = stretch;
+            this.shrink = shrink;
+        }
+        isBox() { return false; }
+        isGlue() { return true; }
+        isPenalty() { return false; }
+        getWidth() { return this.width; }
+        getStretch() { return this.stretch; }
+        getShrink() { return this.shrink; }
+    }
+
+    class Penalty {
+        constructor(width, penalty, flagged) {
+            this.width = width;
+            this.penalty = penalty;
+            this.flagged = flagged;
+        }
+        isBox() { return false; }
+        isGlue() { return false; }
+        isPenalty() { return true; }
+        getWidth() { return this.width; }
+        getStretch() { return 0; }
+        getShrink() { return 0; }
+    }
+
+    // --- Convert Text to Items ---
+    function textToItems(text, fontSize, enableHyphenation) {
+        const items = [];
+        const spaceWidth = measureChar(' ', fontSize);
+        const hyphenWidth = measureChar('-', fontSize);
+        const words = text.split(/\s+/);
+
+        for (let wi = 0; wi < words.length; wi++) {
+            const word = words[wi];
+            if (!word) continue;
+
+            // Get hyphenation points for this word
+            const hyphenPoints = enableHyphenation ? hyphenate(word) : [];
+            let hyphenIdx = 0;
+
+            // Add boxes for each character
+            for (let ci = 0; ci < word.length; ci++) {
+                const char = word[ci];
+                const charWidth = measureChar(char, fontSize);
+                items.push(new Box(charWidth, char));
+
+                // Check for hyphenation point after this character
+                if (hyphenIdx < hyphenPoints.length && hyphenPoints[hyphenIdx] === ci + 1) {
+                    items.push(new Penalty(hyphenWidth, CONFIG.hyphenPenalty, true));
+                    hyphenIdx++;
+                }
+            }
+
+            // Add glue after word (except last word)
+            if (wi < words.length - 1) {
+                items.push(new Glue(
+                    spaceWidth,
+                    spaceWidth * CONFIG.glueStretchRatio,
+                    spaceWidth * CONFIG.glueShrinkRatio
+                ));
+            }
+        }
+
+        // Add parfillskip (infinite stretch for last line)
+        items.push(new Glue(0, 10000, 0));
+
+        // Add terminal penalty
+        items.push(new Penalty(0, NEGATIVE_INFINITE_PENALTY, false));
+
+        return items;
+    }
+
+    // --- Knuth-Plass Algorithm ---
+    class Node {
+        constructor(position, line, fitness, totalWidth, totalStretch, totalShrink, demerits, previous) {
+            this.position = position;
+            this.line = line;
+            this.fitness = fitness;
+            this.totalWidth = totalWidth;
+            this.totalStretch = totalStretch;
+            this.totalShrink = totalShrink;
+            this.demerits = demerits;
+            this.previous = previous;
+        }
+    }
+
+    function isLegalBreakpoint(items, pos) {
+        if (pos >= items.length) return false;
+        return items[pos].isGlue() || items[pos].isPenalty();
+    }
+
+    function computeAdjustmentRatio(activePos, breakPos, lineWidth, cumWidth, cumStretch, cumShrink, items) {
+        let startIdx = activePos;
+        if (activePos > 0) startIdx = activePos + 1;
+
+        let naturalWidth = cumWidth[breakPos] - cumWidth[startIdx];
+
+        // Add hyphen width if breaking at flagged penalty
+        if (breakPos < items.length && items[breakPos].isPenalty() && items[breakPos].flagged) {
+            naturalWidth += items[breakPos].getWidth();
+        }
+
+        if (naturalWidth < lineWidth) {
+            const stretch = cumStretch[breakPos] - cumStretch[startIdx];
+            if (stretch > 0) return (lineWidth - naturalWidth) / stretch;
+            return Infinity;
+        } else if (naturalWidth > lineWidth) {
+            const shrink = cumShrink[breakPos] - cumShrink[startIdx];
+            if (shrink > 0) return (lineWidth - naturalWidth) / shrink;
+            return Infinity;
+        }
+        return 0;
+    }
+
+    function classifyFitness(ratio) {
+        if (ratio < -0.5) return 0; // tight
+        if (ratio <= 0.5) return 1; // normal
+        if (ratio <= 1.0) return 2; // loose
+        return 3; // very loose
+    }
+
+    function computeDemerits(ratio, penalty, newFitness, prevFitness) {
+        const badness = 100 * Math.pow(Math.abs(ratio), 3);
+        let linePenalty = 1.0 + badness;
+
+        if (penalty >= 0) {
+            linePenalty = Math.pow(linePenalty + penalty, 2);
+        } else if (penalty > NEGATIVE_INFINITE_PENALTY) {
+            linePenalty = Math.pow(linePenalty, 2) - Math.pow(penalty, 2);
+        } else {
+            linePenalty = Math.pow(linePenalty, 2);
+        }
+
+        // Fitness penalty
+        let fitnessPenalty = 0;
+        if (Math.abs(newFitness - prevFitness) > 1) {
+            fitnessPenalty = 100;
+        }
+
+        return linePenalty + fitnessPenalty;
+    }
+
+    function breakParagraph(items, lineWidth, tolerance) {
+        if (items.length === 0) return [];
+
+        const n = items.length;
+        const cumWidth = new Array(n + 1).fill(0);
+        const cumStretch = new Array(n + 1).fill(0);
+        const cumShrink = new Array(n + 1).fill(0);
+
+        // Build cumulative sums (excluding penalty widths)
+        for (let i = 0; i < n; i++) {
+            if (items[i].isPenalty()) {
+                cumWidth[i + 1] = cumWidth[i];
+            } else {
+                cumWidth[i + 1] = cumWidth[i] + items[i].getWidth();
+            }
+            cumStretch[i + 1] = cumStretch[i] + items[i].getStretch();
+            cumShrink[i + 1] = cumShrink[i] + items[i].getShrink();
+        }
+
+        // Active nodes by fitness class
+        const active = [[], [], [], []];
+        active[1].push(new Node(0, 0, 1, 0, 0, 0, 0, null));
+
+        // Main loop
+        for (let b = 0; b < n; b++) {
+            if (!isLegalBreakpoint(items, b)) continue;
+
+            const isForcedBreak = items[b].isPenalty() && items[b].penalty <= NEGATIVE_INFINITE_PENALTY;
+
+            for (let fitness = 0; fitness < 4; fitness++) {
+                for (const activeNode of active[fitness]) {
+                    const ratio = computeAdjustmentRatio(
+                        activeNode.position, b, lineWidth,
+                        cumWidth, cumStretch, cumShrink, items
+                    );
+
+                    // Skip if too tight or too loose (but allow forced breaks)
+                    if (!isForcedBreak && (ratio < -1 || ratio > tolerance)) {
+                        continue;
+                    }
+
+                    const penalty = items[b].isPenalty() ? items[b].penalty : 0;
+                    const demerits = computeDemerits(ratio, penalty, classifyFitness(ratio), activeNode.fitness);
+                    const totalDemerits = activeNode.demerits + demerits;
+                    const newFitness = classifyFitness(ratio);
+
+                    // Check for existing node at this position
+                    let existingNode = null;
+                    for (const node of active[newFitness]) {
+                        if (node.position === b) {
+                            existingNode = node;
+                            break;
+                        }
+                    }
+
+                    if (!existingNode || totalDemerits < existingNode.demerits) {
+                        const newNode = new Node(
+                            b,
+                            activeNode.line + 1,
+                            newFitness,
+                            cumWidth[b + 1],
+                            cumStretch[b + 1],
+                            cumShrink[b + 1],
+                            totalDemerits,
+                            activeNode
+                        );
+
+                        if (!existingNode) {
+                            active[newFitness].push(newNode);
+                        } else {
+                            Object.assign(existingNode, newNode);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find best final node
+        const terminalPos = n - 1;
+        let bestNode = null;
+        for (const nodes of active) {
+            for (const node of nodes) {
+                if (node.position === terminalPos) {
+                    if (!bestNode || node.demerits < bestNode.demerits) {
+                        bestNode = node;
+                    }
+                }
+            }
+        }
+
+        if (!bestNode) {
+            return greedyBreaking(items, lineWidth);
+        }
+
+        // Backtrack
+        return backtrackBreakpoints(bestNode, items, lineWidth, cumWidth, cumStretch, cumShrink);
+    }
+
+    function backtrackBreakpoints(finalNode, items, lineWidth, cumWidth, cumStretch, cumShrink) {
+        const breakpoints = [];
+        let node = finalNode;
+
+        while (node && node.previous) {
+            const ratio = computeAdjustmentRatio(
+                node.previous.position, node.position, lineWidth,
+                cumWidth, cumStretch, cumShrink, items
+            );
+            breakpoints.push({ position: node.position, line: node.line, ratio });
+            node = node.previous;
+        }
+
+        breakpoints.push({ position: 0, line: 0, ratio: 0 });
+        breakpoints.reverse();
+        return breakpoints;
+    }
+
+    function greedyBreaking(items, lineWidth) {
+        const breakpoints = [{ position: 0, line: 0, ratio: 0 }];
+        let currentWidth = 0;
+        let lineNum = 1;
+
+        for (let i = 0; i < items.length; i++) {
+            currentWidth += items[i].getWidth();
+
+            if (currentWidth > lineWidth && isLegalBreakpoint(items, i)) {
+                breakpoints.push({ position: i, line: lineNum, ratio: 0 });
+                currentWidth = 0;
+                lineNum++;
+            }
+        }
+
+        if (breakpoints[breakpoints.length - 1].position !== items.length - 1) {
+            breakpoints.push({ position: items.length - 1, line: lineNum, ratio: 0 });
+        }
+
+        return breakpoints;
+    }
+
+    // --- Position Glyphs into Lines ---
+    function positionGlyphs(items, breakpoints, lineWidth) {
+        const lines = [];
+
+        for (let i = 0; i < breakpoints.length - 1; i++) {
+            let startPos = breakpoints[i].position;
+            const endPos = breakpoints[i + 1].position;
+            const isLastLine = (i === breakpoints.length - 2);
+
+            // Skip break item from previous line
+            if (i > 0 && startPos < items.length) {
+                if (items[startPos].isGlue() || items[startPos].isPenalty()) {
+                    startPos++;
+                }
+            }
+
+            // Check for hyphenation at end
+            let breakAtHyphen = false;
+            if (endPos < items.length && items[endPos].isPenalty() && items[endPos].flagged) {
+                breakAtHyphen = true;
+            }
+
+            // Calculate natural width and stretch/shrink
+            let naturalWidth = 0;
+            let totalStretch = 0;
+            let totalShrink = 0;
+
+            for (let j = startPos; j < endPos && j < items.length; j++) {
+                if (!items[j].isPenalty()) {
+                    naturalWidth += items[j].getWidth();
+                }
+                totalStretch += items[j].getStretch();
+                totalShrink += items[j].getShrink();
+            }
+
+            // Build line
+            const chars = [];
+            let x = 0;
+
+            for (let j = startPos; j < endPos && j < items.length; j++) {
+                const item = items[j];
+
+                if (item.isBox()) {
+                    chars.push({ char: item.char, x });
+                    x += item.getWidth();
+                } else if (item.isGlue()) {
+                    let glueWidth = item.getWidth();
+
+                    if (!isLastLine && totalStretch > 0 && naturalWidth < lineWidth) {
+                        const extraSpace = lineWidth - naturalWidth;
+                        glueWidth += extraSpace * (item.getStretch() / totalStretch);
+                    } else if (totalShrink > 0 && naturalWidth > lineWidth) {
+                        const shrinkAmount = naturalWidth - lineWidth;
+                        glueWidth -= shrinkAmount * (item.getShrink() / totalShrink);
+                    }
+
+                    x += glueWidth;
+                }
+            }
+
+            // Add hyphen if needed
+            if (breakAtHyphen) {
+                chars.push({ char: '-', x });
+            }
+
+            lines.push({ chars, isLastLine });
+        }
+
+        return lines;
+    }
+
+    // --- Layout Engine ---
+    function layoutBlock(block, fontSize, enableHyphenation) {
+        const items = textToItems(block.text, fontSize, enableHyphenation);
+        const breakpoints = breakParagraph(items, CONFIG.textWidth, CONFIG.tolerance);
+        const lines = positionGlyphs(items, breakpoints, CONFIG.textWidth);
+
+        const lineHeight = fontSize * CONFIG.lineHeightMultiplier;
+
+        return lines.map(line => ({
+            chars: line.chars,
+            fontSize,
+            lineHeight,
+            isLastLine: line.isLastLine
+        }));
+    }
+
+    function layoutDocument(blocks) {
+        const pages = [];
+        let currentPage = { lines: [] };
+        let y = CONFIG.marginTop;
+        let isFirstBlock = true;
+
+        for (const block of blocks) {
+            let fontSize, spaceAfter, spaceBefore = 0;
+            let enableHyphenation = true;
+
+            if (block.type === 'heading') {
+                const style = getHeadingStyle(block.level);
+                fontSize = style.fontSize;
+                spaceBefore = isFirstBlock ? 0 : style.spaceBefore;
+                spaceAfter = style.spaceAfter;
+                enableHyphenation = false;
+            } else {
+                fontSize = CONFIG.baseFontSize;
+                spaceAfter = CONFIG.baseFontSize * 0.5;
+            }
+
+            y += spaceBefore;
+
+            const lines = layoutBlock(block, fontSize, enableHyphenation);
+
+            for (const line of lines) {
+                // Check for page break
+                if (y + line.lineHeight > CONFIG.pageHeight - CONFIG.marginBottom) {
+                    pages.push(currentPage);
+                    currentPage = { lines: [] };
+                    y = CONFIG.marginTop;
+                }
+
+                currentPage.lines.push({
+                    ...line,
+                    y: y + fontSize * 0.8  // Baseline offset
+                });
+
+                y += line.lineHeight;
+            }
+
+            y += spaceAfter;
+            isFirstBlock = false;
+        }
+
+        if (currentPage.lines.length > 0) {
+            pages.push(currentPage);
+        }
+
+        return pages;
+    }
+
+    // --- Canvas Rendering ---
+    function render(pages) {
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Set canvas size for first page (or all pages stacked)
+        const totalHeight = pages.length * CONFIG.pageHeight + (pages.length - 1) * 20;
+        canvas.width = CONFIG.pageWidth;
+        canvas.height = totalHeight;
+
+        // Clear
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        let pageOffsetY = 0;
+
+        for (const page of pages) {
+            // Draw page background
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, pageOffsetY, CONFIG.pageWidth, CONFIG.pageHeight);
+
+            // Draw margin guides (light)
+            ctx.strokeStyle = '#f0f0f0';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(
+                CONFIG.marginLeft,
+                pageOffsetY + CONFIG.marginTop,
+                CONFIG.textWidth,
+                CONFIG.pageHeight - CONFIG.marginTop - CONFIG.marginBottom
+            );
+
+            // Draw text
+            ctx.fillStyle = '#000';
+
+            for (const line of page.lines) {
+                ctx.font = `${line.fontSize}px ${CONFIG.fontFamily}`;
+
+                for (const glyph of line.chars) {
+                    ctx.fillText(glyph.char, CONFIG.marginLeft + glyph.x, pageOffsetY + line.y);
+                }
+            }
+
+            pageOffsetY += CONFIG.pageHeight + 20;
+        }
+
+        // Update stats
+        const totalLines = pages.reduce((sum, p) => sum + p.lines.length, 0);
+        document.getElementById('stats').textContent =
+            `${pages.length} page(s), ${totalLines} lines`;
+    }
+
+    // --- Main ---
+    let debounceTimer = null;
+
+    function update() {
+        const startTime = performance.now();
+
+        const text = document.getElementById('input').value;
+        const blocks = parseMarkdown(text);
+        const pages = layoutDocument(blocks);
+        render(pages);
+
+        const elapsed = performance.now() - startTime;
+        const stats = document.getElementById('stats');
+        stats.textContent += ` (${elapsed.toFixed(1)}ms)`;
+    }
+
+    function debouncedUpdate() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(update, 50);
+    }
+
+    document.getElementById('input').addEventListener('input', debouncedUpdate);
+
+    // Initial render
+    update();
+    </script>
+</body>
+</html>

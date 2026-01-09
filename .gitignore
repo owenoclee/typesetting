@@ -1,18 +1,2 @@
-# Compiled binary
-typeset
-
-# Output files
-*.pdf
-
-# Go build artifacts
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test binary
-*.test
-
-# Go coverage
-*.out
+# OS files
+.DS_Store
