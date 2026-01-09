@@ -752,14 +752,26 @@ This approach produces significantly better results than simple greedy algorithm
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
 
+        // High-DPI support: scale canvas for crisp rendering on Retina displays
+        const dpr = window.devicePixelRatio || 1;
+
         // Set canvas size for first page (or all pages stacked)
         const totalHeight = pages.length * CONFIG.pageHeight + (pages.length - 1) * 20;
-        canvas.width = CONFIG.pageWidth;
-        canvas.height = totalHeight;
+
+        // Set actual canvas size (scaled for DPI)
+        canvas.width = CONFIG.pageWidth * dpr;
+        canvas.height = totalHeight * dpr;
+
+        // Set display size via CSS
+        canvas.style.width = CONFIG.pageWidth + 'px';
+        canvas.style.height = totalHeight + 'px';
+
+        // Scale context to match DPI
+        ctx.scale(dpr, dpr);
 
         // Clear
         ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillRect(0, 0, CONFIG.pageWidth, totalHeight);
 
         let pageOffsetY = 0;
 
