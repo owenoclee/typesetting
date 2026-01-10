@@ -65,6 +65,96 @@
             font-size: 12px;
             color: #666;
         }
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .btn {
+            padding: 8px 16px;
+            font-size: 14px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #fff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn:hover {
+            background: #f0f0f0;
+            border-color: #ccc;
+        }
+        .btn.active {
+            background: #007bff;
+            color: #fff;
+            border-color: #007bff;
+        }
+        .btn-primary {
+            background: #007bff;
+            color: #fff;
+            border-color: #007bff;
+        }
+        .btn-primary:hover {
+            background: #0056b3;
+            border-color: #0056b3;
+        }
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.visible {
+            display: flex;
+        }
+        .modal {
+            background: #fff;
+            border-radius: 12px;
+            padding: 24px;
+            min-width: 320px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        .modal h2 {
+            margin: 0 0 20px 0;
+            font-size: 20px;
+        }
+        .modal-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .modal-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .modal-option:hover {
+            border-color: #007bff;
+            background: #f8f9fa;
+        }
+        .modal-option.selected {
+            border-color: #007bff;
+            background: #e7f1ff;
+        }
+        .modal-option input {
+            margin: 0;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
     </style>
 </head>
 <body>
@@ -87,10 +177,49 @@ This approach produces significantly better results than simple greedy algorithm
         </div>
         <div class="output-panel">
             <h1>Typeset Output</h1>
+            <div class="toolbar">
+                <button class="btn active" id="toggleGuides">Margin Guides</button>
+                <button class="btn btn-primary" id="exportBtn">Export / Print</button>
+            </div>
             <div class="canvas-container">
                 <canvas id="canvas"></canvas>
             </div>
             <div class="stats" id="stats"></div>
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div class="modal-overlay" id="exportModal">
+        <div class="modal">
+            <h2>Export Document</h2>
+            <div class="modal-options">
+                <label class="modal-option selected" data-dpi="72">
+                    <input type="radio" name="dpi" value="72" checked>
+                    <div>
+                        <strong>72 DPI</strong><br>
+                        <small style="color: #666;">Screen resolution, smaller file</small>
+                    </div>
+                </label>
+                <label class="modal-option" data-dpi="300">
+                    <input type="radio" name="dpi" value="300">
+                    <div>
+                        <strong>300 DPI</strong><br>
+                        <small style="color: #666;">Print quality, recommended</small>
+                    </div>
+                </label>
+                <label class="modal-option" data-dpi="600">
+                    <input type="radio" name="dpi" value="600">
+                    <div>
+                        <strong>600 DPI</strong><br>
+                        <small style="color: #666;">High quality print, large file</small>
+                    </div>
+                </label>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" id="cancelExport">Cancel</button>
+                <button class="btn" id="printBtn">Print</button>
+                <button class="btn btn-primary" id="saveBtn">Save PNG</button>
+            </div>
         </div>
     </div>
 
@@ -643,6 +772,11 @@ This approach produces significantly better results than simple greedy algorithm
                 totalShrink += items[j].getShrink();
             }
 
+            // Include hyphen width if breaking at hyphenation point
+            if (breakAtHyphen) {
+                naturalWidth += items[endPos].getWidth();
+            }
+
             // Build line
             const chars = [];
             let x = 0;
@@ -747,24 +881,33 @@ This approach produces significantly better results than simple greedy algorithm
         return pages;
     }
 
-    // --- Canvas Rendering ---
-    function render(pages) {
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
+    // --- State ---
+    let showGuides = true;
+    let currentPages = [];
 
-        // High-DPI support: scale canvas for crisp rendering on Retina displays
-        const dpr = window.devicePixelRatio || 1;
+    // --- Canvas Rendering ---
+    function render(pages, options = {}) {
+        const canvas = options.canvas || document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const showMarginGuides = options.showGuides !== undefined ? options.showGuides : showGuides;
+        const forExport = options.forExport || false;
+
+        // DPI scaling: use devicePixelRatio for screen, or specified DPI ratio for export
+        const dpr = forExport ? (options.dpiScale || 1) : (window.devicePixelRatio || 1);
 
         // Set canvas size for first page (or all pages stacked)
-        const totalHeight = pages.length * CONFIG.pageHeight + (pages.length - 1) * 20;
+        const pageGap = forExport ? 0 : 20;
+        const totalHeight = pages.length * CONFIG.pageHeight + (pages.length - 1) * pageGap;
 
         // Set actual canvas size (scaled for DPI)
         canvas.width = CONFIG.pageWidth * dpr;
         canvas.height = totalHeight * dpr;
 
-        // Set display size via CSS
-        canvas.style.width = CONFIG.pageWidth + 'px';
-        canvas.style.height = totalHeight + 'px';
+        // Set display size via CSS (only for screen canvas)
+        if (!forExport) {
+            canvas.style.width = CONFIG.pageWidth + 'px';
+            canvas.style.height = totalHeight + 'px';
+        }
 
         // Scale context to match DPI
         ctx.scale(dpr, dpr);
@@ -780,15 +923,17 @@ This approach produces significantly better results than simple greedy algorithm
             ctx.fillStyle = '#fff';
             ctx.fillRect(0, pageOffsetY, CONFIG.pageWidth, CONFIG.pageHeight);
 
-            // Draw margin guides (light)
-            ctx.strokeStyle = '#f0f0f0';
-            ctx.lineWidth = 0.5;
-            ctx.strokeRect(
-                CONFIG.marginLeft,
-                pageOffsetY + CONFIG.marginTop,
-                CONFIG.textWidth,
-                CONFIG.pageHeight - CONFIG.marginTop - CONFIG.marginBottom
-            );
+            // Draw margin guides (light) - only if enabled and not exporting
+            if (showMarginGuides && !forExport) {
+                ctx.strokeStyle = '#e0e0e0';
+                ctx.lineWidth = 0.5;
+                ctx.strokeRect(
+                    CONFIG.marginLeft,
+                    pageOffsetY + CONFIG.marginTop,
+                    CONFIG.textWidth,
+                    CONFIG.pageHeight - CONFIG.marginTop - CONFIG.marginBottom
+                );
+            }
 
             // Draw text
             ctx.fillStyle = '#000';
@@ -801,13 +946,84 @@ This approach produces significantly better results than simple greedy algorithm
                 }
             }
 
-            pageOffsetY += CONFIG.pageHeight + 20;
+            pageOffsetY += CONFIG.pageHeight + pageGap;
         }
 
-        // Update stats
-        const totalLines = pages.reduce((sum, p) => sum + p.lines.length, 0);
-        document.getElementById('stats').textContent =
-            `${pages.length} page(s), ${totalLines} lines`;
+        // Update stats (only for screen render)
+        if (!forExport) {
+            const totalLines = pages.reduce((sum, p) => sum + p.lines.length, 0);
+            document.getElementById('stats').textContent =
+                `${pages.length} page(s), ${totalLines} lines`;
+        }
+    }
+
+    // --- Export Functions ---
+    function getSelectedDPI() {
+        const selected = document.querySelector('input[name="dpi"]:checked');
+        return parseInt(selected.value, 10);
+    }
+
+    function exportToCanvas(dpi) {
+        // A4 at specified DPI: 8.27 x 11.69 inches
+        const scale = dpi / 72; // Our base is 72 DPI (595x842 points)
+        const exportCanvas = document.createElement('canvas');
+
+        render(currentPages, {
+            canvas: exportCanvas,
+            dpiScale: scale,
+            forExport: true,
+            showGuides: false
+        });
+
+        return exportCanvas;
+    }
+
+    function saveAsPNG() {
+        const dpi = getSelectedDPI();
+        const exportCanvas = exportToCanvas(dpi);
+
+        const link = document.createElement('a');
+        link.download = `typeset-${dpi}dpi.png`;
+        link.href = exportCanvas.toDataURL('image/png');
+        link.click();
+
+        closeModal();
+    }
+
+    function printDocument() {
+        const dpi = getSelectedDPI();
+        const exportCanvas = exportToCanvas(dpi);
+
+        const printWindow = window.open('', '_blank');
+        printWindow.document.write(`
+            <html>
+            <head>
+                <title>Print Document</title>
+                <style>
+                    body { margin: 0; display: flex; justify-content: center; }
+                    img { max-width: 100%; height: auto; }
+                    @media print {
+                        body { margin: 0; }
+                        img { width: 100%; }
+                    }
+                </style>
+            </head>
+            <body>
+                <img src="${exportCanvas.toDataURL('image/png')}" onload="window.print(); window.close();">
+            </body>
+            </html>
+        `);
+        printWindow.document.close();
+
+        closeModal();
+    }
+
+    function openModal() {
+        document.getElementById('exportModal').classList.add('visible');
+    }
+
+    function closeModal() {
+        document.getElementById('exportModal').classList.remove('visible');
     }
 
     // --- Main ---
@@ -818,8 +1034,8 @@ This approach produces significantly better results than simple greedy algorithm
 
         const text = document.getElementById('input').value;
         const blocks = parseMarkdown(text);
-        const pages = layoutDocument(blocks);
-        render(pages);
+        currentPages = layoutDocument(blocks);
+        render(currentPages);
 
         const elapsed = performance.now() - startTime;
         const stats = document.getElementById('stats');
@@ -831,7 +1047,35 @@ This approach produces significantly better results than simple greedy algorithm
         debounceTimer = setTimeout(update, 50);
     }
 
+    // --- Event Listeners ---
     document.getElementById('input').addEventListener('input', debouncedUpdate);
+
+    // Toggle margin guides
+    document.getElementById('toggleGuides').addEventListener('click', function() {
+        showGuides = !showGuides;
+        this.classList.toggle('active', showGuides);
+        render(currentPages);
+    });
+
+    // Export modal
+    document.getElementById('exportBtn').addEventListener('click', openModal);
+    document.getElementById('cancelExport').addEventListener('click', closeModal);
+    document.getElementById('saveBtn').addEventListener('click', saveAsPNG);
+    document.getElementById('printBtn').addEventListener('click', printDocument);
+
+    // Close modal on overlay click
+    document.getElementById('exportModal').addEventListener('click', function(e) {
+        if (e.target === this) closeModal();
+    });
+
+    // DPI option selection styling
+    document.querySelectorAll('.modal-option').forEach(option => {
+        option.addEventListener('click', function() {
+            document.querySelectorAll('.modal-option').forEach(o => o.classList.remove('selected'));
+            this.classList.add('selected');
+            this.querySelector('input').checked = true;
+        });
+    });
 
     // Initial render
     update();
